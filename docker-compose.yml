@@ -1,0 +1,39 @@
+# Production-like local stack: Postgres + the same image that runs on ECS.
+#   docker compose up --build
+#   docker compose run --rm web python manage.py migrate
+#   docker compose run --rm web python manage.py createsuperuser
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: careersite
+      POSTGRES_USER: careersite
+      POSTGRES_PASSWORD: careersite
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careersite"]
+      interval: 5s
+      retries: 10
+
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DJANGO_SECRET_KEY: local-compose-secret
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      DJANGO_CSRF_TRUSTED_ORIGINS: http://localhost:8000
+      SECURE_SSL_REDIRECT: "false"
+      DB_HOST: db
+      DB_NAME: careersite
+      DB_USER: careersite
+      DB_PASSWORD: careersite
+      DB_SSLMODE: disable
+      WAGTAILADMIN_BASE_URL: http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

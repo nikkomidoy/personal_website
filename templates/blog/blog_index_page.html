@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags %}
+{% block content %}
+<h1>{{ page.title }}</h1>
+{% if page.intro %}<p class="lead">{{ page.intro }}</p>{% endif %}
+<ul class="card-list">
+    {% for post in posts %}
+    <li class="card"><a href="{% pageurl post %}"><h2>{{ post.title }}</h2></a><p class="muted">{{ post.date|date:"j F Y" }}</p>{% if post.intro %}<p>{{ post.intro }}</p>{% endif %}</li>
+    {% empty %}
+    <li class="muted">No posts yet.</li>
+    {% endfor %}
+</ul>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags wagtailimages_tags %}
+{% block content %}
+<article class="prose">
+    <h1>{{ page.title }}</h1>
+    {% if page.summary %}<p class="lead">{{ page.summary }}</p>{% endif %}
+    <ul class="tags">{% for tech in page.technology_list %}<li>{{ tech }}</li>{% endfor %}</ul>
+    <p class="actions">
+        {% if page.project_url %}<a class="button" href="{{ page.project_url }}" rel="noopener">View project</a>{% endif %}
+        {% if page.repository_url %}<a class="button button-ghost" href="{{ page.repository_url }}" rel="noopener">Source code</a>{% endif %}
+    </p>
+    {% if page.image %}<figure>{% image page.image width-1200 %}</figure>{% endif %}
+    {% include "includes/body.html" with body=page.body %}
+    <p><a href="{% pageurl page.get_parent %}">← All projects</a></p>
+</article>
+{% endblock %}

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags wagtailimages_tags %}
+{% block body_class %}home{% endblock %}
+{% block content %}
+{% with profile=settings.core.SiteProfile %}
+<section class="hero">
+    {% if page.profile_image %}{% image page.profile_image fill-240x240 class="avatar" %}{% endif %}
+    <div>
+        <p class="eyebrow">{{ profile.job_title }}{% if profile.location %} · {{ profile.location }}{% endif %}</p>
+        <h1>{{ page.headline|default:page.title }}</h1>
+        {% if page.summary %}<div class="lead">{{ page.summary|richtext }}</div>{% endif %}
+        <p class="actions">
+            {% if profile.resume %}<a class="button" href="{{ profile.resume.url }}">Download résumé</a>{% endif %}
+            {% if profile.email %}<a class="button button-ghost" href="mailto:{{ profile.email }}">Get in touch</a>{% endif %}
+        </p>
+    </div>
+</section>
+{% endwith %}
+
+{% if page.experiences.all %}
+<section id="experience">
+    <h2>Experience</h2>
+    <ol class="timeline">
+        {% for job in page.experiences.all %}
+        <li>
+            <div class="timeline-dates">{{ job.start_date|date:"M Y" }} – {% if job.is_current %}Present{% else %}{{ job.end_date|date:"M Y" }}{% endif %}</div>
+            <div>
+                <h3>{{ job.role }} · {% if job.company_url %}<a href="{{ job.company_url }}" rel="noopener">{{ job.company }}</a>{% else %}{{ job.company }}{% endif %}</h3>
+                {% if job.location %}<p class="muted">{{ job.location }}</p>{% endif %}
+                {{ job.description|richtext }}
+            </div>
+        </li>
+        {% endfor %}
+    </ol>
+</section>
+{% endif %}
+
+{% if skill_groups %}
+<section id="skills">
+    <h2>Skills</h2>
+    <div class="skill-groups">
+        {% for category, skills in skill_groups %}
+        <div><h3>{{ category }}</h3><ul class="tags">{% for skill in skills %}<li>{{ skill.name }}</li>{% endfor %}</ul></div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if page.education_entries.all %}
+<section id="education">
+    <h2>Education</h2>
+    <ol class="timeline">
+        {% for edu in page.education_entries.all %}
+        <li>
+            <div class="timeline-dates">{{ edu.start_year|default_if_none:"" }}{% if edu.start_year and edu.end_year %} – {% endif %}{{ edu.end_year|default_if_none:"" }}</div>
+            <div><h3>{{ edu.qualification }}</h3><p class="muted">{{ edu.institution }}</p>{{ edu.description|richtext }}</div>
+        </li>
+        {% endfor %}
+    </ol>
+</section>
+{% endif %}
+
+{% include "includes/body.html" with body=page.body %}
+{% endblock %}

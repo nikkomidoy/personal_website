@@ -1,0 +1,131 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at once; queue them instead.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.outputs.outputs.site_url }}
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC -> AWS IAM role, no long-lived keys
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      STACK_NAME: ${{ vars.STACK_NAME || 'careersite' }}
+      DESIRED_COUNT: ${{ vars.ECS_DESIRED_COUNT || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Read stack outputs
+        id: outputs
+        run: |
+          aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' --output json \
+            | jq -r '.[] | "\(.OutputKey)=\(.OutputValue)"' > outputs.env
+          while IFS='=' read -r key value; do
+            case "$key" in
+              EcrRepository)        echo "ecr_repository=$value" >> "$GITHUB_OUTPUT" ;;
+              ClusterName)          echo "cluster=$value" >> "$GITHUB_OUTPUT" ;;
+              ServiceName)          echo "service=$value" >> "$GITHUB_OUTPUT" ;;
+              TaskDefinitionFamily) echo "family=$value" >> "$GITHUB_OUTPUT" ;;
+              AppSubnets)           echo "subnets=$value" >> "$GITHUB_OUTPUT" ;;
+              AppSecurityGroup)     echo "security_group=$value" >> "$GITHUB_OUTPUT" ;;
+              SiteURL)              echo "site_url=$value" >> "$GITHUB_OUTPUT" ;;
+            esac
+          done < outputs.env
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ steps.outputs.outputs.ecr_repository }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ steps.outputs.outputs.ecr_repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Register task definition with new image
+        id: taskdef
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ steps.outputs.outputs.ecr_repository }}:${{ github.sha }}
+          FAMILY: ${{ steps.outputs.outputs.family }}
+        run: |
+          aws ecs describe-task-definition --task-definition "$FAMILY" --query taskDefinition \
+            | jq --arg IMAGE "$IMAGE" '
+                .containerDefinitions |= map(if .name == "web" then .image = $IMAGE else . end)
+                | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                      .registeredAt, .registeredBy, .deregisteredAt)' > task-definition.json
+          arn=$(aws ecs register-task-definition --cli-input-json file://task-definition.json \
+                  --query taskDefinition.taskDefinitionArn --output text)
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+          echo "Registered $arn"
+
+      - name: Run database migrations
+        env:
+          CLUSTER: ${{ steps.outputs.outputs.cluster }}
+          TASK_DEF: ${{ steps.taskdef.outputs.arn }}
+          SUBNETS: ${{ steps.outputs.outputs.subnets }}
+          SECURITY_GROUP: ${{ steps.outputs.outputs.security_group }}
+        run: |
+          task=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
+            --overrides '{"containerOverrides":[{"name":"web","command":["python","manage.py","migrate","--noinput"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Migration task: $task"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
+          exit_code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" \
+            --query 'tasks[0].containers[?name==`web`].exitCode | [0]' --output text)
+          echo "Migration exit code: $exit_code"
+          if [ "$exit_code" != "0" ]; then
+            aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].[stoppedReason,containers[0].reason]'
+            echo "::error::Migrations failed — see CloudWatch log group /ecs/$STACK_NAME"
+            exit 1
+          fi
+
+      - name: Deploy service
+        env:
+          CLUSTER: ${{ steps.outputs.outputs.cluster }}
+          SERVICE: ${{ steps.outputs.outputs.service }}
+          TASK_DEF: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$TASK_DEF" --desired-count "$DESIRED_COUNT" > /dev/null
+          echo "Waiting for the service to become stable…"
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+          echo "Deployed ${{ github.sha }} → ${{ steps.outputs.outputs.site_url }}"
+
+      - name: Smoke test
+        env:
+          SITE_URL: ${{ steps.outputs.outputs.site_url }}
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 --location "$SITE_URL/health/"
